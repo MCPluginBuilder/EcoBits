@@ -3,6 +3,7 @@ package com.willfp.ecobits
 import com.willfp.eco.core.EcoPlugin
 import com.willfp.eco.core.bstats.EcoMetricsChart
 import com.willfp.eco.core.command.impl.PluginCommand
+import com.willfp.eco.core.leaderboard.Leaderboards
 import com.willfp.eco.util.ClassUtils
 import com.willfp.ecobits.commands.CommandEcoBits
 import com.willfp.ecobits.currencies.Currencies
@@ -35,7 +36,17 @@ class EcoBitsPlugin : EcoPlugin() {
     }
 
     override fun handleReload() {
+        // Registration is keyed plugin:id, so a currency removed from the config would otherwise
+        // leave a dead leaderboard behind, still being refreshed, on every reload.
+        Leaderboards.unregisterAll(this)
+
         Currencies.update()
+
+        // Registered here, after the currencies have been rebuilt, rather than from the Currency
+        // constructor: a leaderboard registered there would be deleted by the unregisterAll above.
+        for (currency in Currencies.values()) {
+            currency.registerLeaderboard()
+        }
     }
 
     override fun loadPluginCommands(): List<PluginCommand> {

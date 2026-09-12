@@ -1,16 +1,17 @@
 package com.willfp.ecobits.commands
 
 import com.willfp.eco.core.command.impl.Subcommand
+import com.willfp.eco.core.leaderboard.Leaderboards
 import com.willfp.eco.core.placeholder.context.placeholderContext
 import com.willfp.eco.util.formatEco
 import com.willfp.eco.util.formatWithCommas
 import com.willfp.eco.util.savedDisplayName
 import com.willfp.ecobits.currencies.Currencies
-import com.willfp.ecobits.currencies.CurrenciesLeaderboard.getTop
 import com.willfp.ecobits.currencies.Currency
 import com.willfp.ecobits.currencies.decimalFormat
 import com.willfp.ecobits.currencies.decimalFormatShort
 import com.willfp.ecobits.currencies.format
+import com.willfp.ecobits.currencies.getBalance
 import com.willfp.ecobits.currencies.formatShort
 import com.willfp.ecobits.plugin
 import org.bukkit.command.CommandSender
@@ -28,6 +29,9 @@ class CommandTop(
     private val argOffset = if (currency == null) 0 else -1
 
     override fun onExecute(sender: CommandSender, args: List<String>) {
+        // Run async: the leaderboard scan itself is an O(1) snapshot lookup, but reading each
+        // entry's exact balance below goes through the player's profile, which hits the database
+        // for anyone not currently loaded - up to ten blocking loads per invocation.
         plugin.scheduler.runAsync {
             val currency = if (this.currency == null) {
                 if (args.isEmpty()) {
@@ -52,13 +56,17 @@ class CommandTop(
 
             val offset = (page - 1) * 10
             val positions = ((offset + 1)..(offset + 10)).toList()
-            val top = positions.mapNotNull { currency.getTop(it) }
+            val top = positions.mapNotNull { currency.leaderboard?.getTop(it) }
 
             val messages = plugin.langYml.getStrings("top.format")
             val lines = mutableListOf<String>()
 
             for ((index, entry) in top.withIndex()) {
-                val (player, balance) = entry
+                val player = entry.player
+
+                // Read the exact BigDecimal rather than the entry's double: the leaderboard ranks on
+                // a double, which does not round-trip a balance above 2^53.
+                val balance = player.getBalance(currency)
 
                 val line = plugin.langYml.getString("top-line-format")
                     .replace("%rank%", (offset + index + 1).toString())
@@ -74,7 +82,13 @@ class CommandTop(
                 lines.add(line)
             }
 
-            val linesIndex = messages.indexOf("%lines%")
+            // An empty leaderboard still shows its header and footer, with the universal
+        // "no records" message standing in for the entries.
+        if (lines.isEmpty()) {
+            lines.add(Leaderboards.getNoRecordsMessage(plugin))
+        }
+
+        val linesIndex = messages.indexOf("%lines%")
             if (linesIndex != -1) {
                 messages.removeAt(linesIndex)
                 messages.addAll(linesIndex, lines)

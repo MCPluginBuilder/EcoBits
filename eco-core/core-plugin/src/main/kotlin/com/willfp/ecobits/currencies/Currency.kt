@@ -8,6 +8,9 @@ import com.willfp.eco.core.config.interfaces.Config
 import com.willfp.eco.core.data.keys.PersistentDataKey
 import com.willfp.eco.core.data.keys.PersistentDataKeyType
 import com.willfp.eco.core.data.profile
+import com.willfp.eco.core.leaderboard.Leaderboard
+import com.willfp.eco.core.leaderboard.Leaderboards
+import com.willfp.eco.core.leaderboard.registerStandardPlaceholders
 import com.willfp.eco.core.integrations.placeholder.PlaceholderManager
 import com.willfp.eco.core.placeholder.PlayerPlaceholder
 import com.willfp.eco.core.placeholder.PlayerlessPlaceholder
@@ -16,7 +19,6 @@ import com.willfp.eco.util.StringUtils
 import com.willfp.eco.util.formatWithCommas
 import com.willfp.ecobits.EcoBitsPlugin
 import com.willfp.ecobits.commands.DynamicCurrencyCommand
-import com.willfp.ecobits.currencies.CurrenciesLeaderboard.getPosition
 import com.willfp.ecobits.events.CurrencyGainEvent
 import com.willfp.ecobits.integrations.IntegrationVault
 import com.willfp.ecobits.plugin
@@ -31,6 +33,7 @@ import java.text.DecimalFormat
 import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
+import com.willfp.eco.util.formatEco
 
 open class Currency(
     val id: String,
@@ -85,6 +88,50 @@ open class Currency(
     val decimalFormatShort = DecimalFormat(config.getString("decimal-format-short"))
 
     val priceFactory = PriceFactoryCurrency(this)
+
+    /**
+     * The leaderboard ranking players by their balance of this currency, or null before the
+     * first reload has registered it.
+     */
+    var leaderboard: Leaderboard? = null
+        private set
+
+    /**
+     * Register (or re-register) this currency's leaderboard and its placeholders.
+     *
+     * Called from [com.willfp.ecobits.EcoBitsPlugin.handleReload] rather than from the
+     * constructor: currencies are rebuilt by Currencies.update() during the reload, and a
+     * leaderboard registered in the constructor would be thrown away by the
+     * [Leaderboards.unregisterAll] call at the top of the reload handler.
+     */
+    internal fun registerLeaderboard() {
+        // Nothing at all is registered when disabled -- no leaderboard, and no placeholders. The
+        // stub rank placeholder is deliberately gone: every plugin now leaves its placeholders
+        // unregistered when its leaderboard is off, rather than three of them disagreeing.
+        if (!plugin.configYml.getBool("leaderboard.enabled")) {
+            leaderboard = null
+            return
+        }
+
+        // Ranked by the currency key directly: eco reads every ranked key on the server in one
+        // batched query and updates the values in memory as they are written, neither of which it
+        // can do through an opaque provider. Players at or below the configured starting balance
+        // have not earned anything and are left unranked.
+        //
+        // Ranked on double for ordering only - the exact BigDecimal is re-read for display, since
+        // a balance above 2^53 will not round-trip.
+        val leaderboard = Leaderboards.ofKey(plugin, id, key)
+
+        this.leaderboard = leaderboard
+
+        // Prefixed with the leaderboard suffix so the rank placeholder keeps the exact name
+        // servers already use: %ecobits_<id>_leaderboard_rank%.
+        leaderboard.registerStandardPlaceholders(
+            plugin,
+            "${id}_leaderboard",
+            plugin.langYml.getString("top.empty-position").formatEco()
+        ) { BigDecimal.valueOf(it).decimalFormat(this) }
+    }
 
     private fun registerCommands() {
         this.commands.forEach { it.register() }
@@ -157,19 +204,6 @@ open class Currency(
                 it.getBalance(this).toInt().toString()
             }
         )
-
-        if (plugin.configYml.getBool("leaderboard.enabled"))
-            PlaceholderManager.registerPlaceholder(
-                PlayerPlaceholder(
-                    plugin,
-                    "${id}_leaderboard_rank"
-                )
-                { player ->
-                    val emptyPosition = plugin.langYml.getString("top.empty-position")
-                    val position = getPosition(player.uniqueId)
-                    position?.toString() ?: emptyPosition
-                }
-            )
 
         PlaceholderManager.registerPlaceholder(
             PlayerlessPlaceholder(
